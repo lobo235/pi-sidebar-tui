@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.6] - 2026-10-03
+
+### Changed
+
+- **MCP status via built-in pi MCP**: The MCP Servers panel now reads live connection state from pi's built-in MCP tool registry (`pi.getAllTools()`) instead of the `mcp-cache.json` file written by the separate pi-mcp-adapter extension. A server counts as connected once pi registers its `mcp__<server>__<tool>` tools; tools with `direct` exposure are the ones counted as direct and included in the token estimate. `mcp-cache.json` is still honored as a per-server fallback when present.
+
+### Fixed
+
+- **MCP connection status stuck disconnected**: With built-in pi MCP, `mcp-cache.json` is no longer written, so every configured server rendered as disconnected (`○`).
+- **Disabled MCP servers not marked**: Built-in `mcp.json` disables a server with `"enabled": false`; the panel only recognized the legacy `disabled: true` field. Such servers now show the `⊘` disabled glyph.
+
 ## [1.7.5] - 2026-09-24
 
 ### Changed

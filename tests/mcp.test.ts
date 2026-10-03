@@ -32,6 +32,11 @@ function writeConfig(dir: string, config: unknown, cache?: unknown): void {
   if (cache !== undefined) writeFileSync(join(dir, "mcp-cache.json"), JSON.stringify(cache), "utf8");
 }
 
+/** Minimal live tool as reported by pi.getAllTools() for a connected built-in MCP server. */
+function liveTool(name: string, exposure: string = "codemode", description: string = "d") {
+  return { name, description, parameters: { type: "object" }, exposure };
+}
+
 function makeMcpCtx(servers: McpServerInfo[]): SidebarContext {
   return {
     sessionTitle: null,
@@ -149,6 +154,95 @@ test("getMcpServers: invalidateMcpCache forces a fresh read", () => {
     else process.env["PI_AGENT_DIR"] = prev;
     invalidateMcpCache();
   }
+});
+
+// ─── getMcpServers with live built-in pi tools ───────────────────────────────
+
+test("getMcpServers: live mcp tools report connected with counts", () => {
+  withAgentDir(
+    (dir) => writeConfig(dir, { mcpServers: { Blender: { command: "x" } } }),
+    () => {
+      const s = getMcpServers([
+        liveTool("mcp__Blender__get_scene", "codemode"),
+        liveTool("mcp__Blender__set_property", "direct"),
+      ])[0];
+      assert.equal(s.connected, true);
+      assert.equal(s.totalCount, 2);
+      assert.equal(s.directCount, 1, "only direct-exposure tools count as direct");
+      assert.ok(s.tokenEstimate > 0, "token estimate should be positive");
+    },
+  );
+});
+
+test("getMcpServers: configured server with no live tools and no cache is disconnected", () => {
+  withAgentDir(
+    (dir) => writeConfig(dir, { mcpServers: { srv: { command: "x" } } }),
+    () => {
+      const s = getMcpServers([])[0];
+      assert.equal(s.disabled, false);
+      assert.equal(s.connected, false);
+      assert.equal(s.totalCount, 0);
+      assert.equal(s.directCount, 0);
+      assert.equal(s.tokenEstimate, 0);
+    },
+  );
+});
+
+test("getMcpServers: enabled false marks server disabled even if live tools exist", () => {
+  withAgentDir(
+    (dir) => writeConfig(dir, { mcpServers: { srv: { command: "x", enabled: false } } }),
+    () => {
+      const s = getMcpServers([liveTool("mcp__srv__t", "direct")])[0];
+      assert.equal(s.disabled, true);
+      assert.equal(s.connected, false);
+      assert.equal(s.totalCount, 0);
+    },
+  );
+});
+
+test("getMcpServers: normalizes server name in live tool prefix", () => {
+  withAgentDir(
+    (dir) => writeConfig(dir, { mcpServers: { "dev-resolve": { command: "x" } } }),
+    () => {
+      // pi names tools mcp__dev_resolve__* (non-alphanumerics become _)
+      const s = getMcpServers([liveTool("mcp__dev_resolve__do_thing", "direct")])[0];
+      assert.equal(s.connected, true);
+      assert.equal(s.totalCount, 1);
+      assert.equal(s.directCount, 1);
+    },
+  );
+});
+
+test("getMcpServers: live tools do not leak across similar server names", () => {
+  withAgentDir(
+    (dir) => writeConfig(dir, { mcpServers: { a: { command: "x" }, ab: { command: "y" } } }),
+    () => {
+      const servers = getMcpServers([liveTool("mcp__ab__t", "direct")]);
+      const a = servers.find((x) => x.name === "a")!;
+      const ab = servers.find((x) => x.name === "ab")!;
+      assert.equal(a.connected, false);
+      assert.equal(a.totalCount, 0);
+      assert.equal(ab.connected, true);
+      assert.equal(ab.totalCount, 1);
+    },
+  );
+});
+
+test("getMcpServers: live tools take precedence over cached tools", () => {
+  withAgentDir(
+    (dir) =>
+      writeConfig(
+        dir,
+        { mcpServers: { srv: { command: "x" } } },
+        { version: 1, servers: { srv: { tools: [{ name: "c1" }, { name: "c2" }, { name: "c3" }] } } },
+      ),
+    () => {
+      const s = getMcpServers([liveTool("mcp__srv__live1", "direct")])[0];
+      assert.equal(s.connected, true);
+      assert.equal(s.totalCount, 1, "live tool list is authoritative");
+      assert.equal(s.directCount, 1);
+    },
+  );
 });
 
 // ─── MCP panel ────────────────────────────────────────────────────────────────

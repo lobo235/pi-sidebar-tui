@@ -5,7 +5,7 @@ import { parseTodos, reconstructTodosFromBranch } from "./parse-todos.ts";
 import { renderSidebar } from "./sidebar.ts";
 import { getWorkspaceData, invalidateWorkspaceCache } from "./workspace.ts";
 import { SidebarCompositor } from "./compositor.ts";
-import { getMcpServers, invalidateMcpCache } from "./mcp.ts";
+import { getMcpServers, invalidateMcpCache, type LiveMcpTool } from "./mcp.ts";
 import { loadCavemanConfig, resolveCavemanLevel, cavemanInterval, type CavemanConfig } from "./caveman.ts";
 import { setPiTheme } from "./colors.ts";
 
@@ -31,6 +31,7 @@ let cacheWrite = 0;
 let sessionCost = 0;
 let turnCount = 0;
 let activeTool: { name: string; startedAt: number } | null = null;
+let liveMcpToolsProvider: (() => readonly LiveMcpTool[] | null) | null = null;
 let sessionStartMs = Date.now();
 let modelProvider: string | null = null;
 let agentStartMs: number | null = null;
@@ -153,7 +154,7 @@ function buildSidebarContext(cwd: string | undefined): SidebarContext {
     activeTool,
     autoCompactEnabled: getAutoCompactEnabled({ cwd }),
     sessionStartMs,
-    mcpServers: getMcpServers(),
+    mcpServers: getMcpServers(liveMcpToolsProvider ? liveMcpToolsProvider() : null),
     modelProvider,
     cavemanLevel,
     cavemanFrame,
@@ -199,6 +200,18 @@ export default function piSidebar(pi: ExtensionAPI) {
   let requestRender: (() => void) | null = null;
   let tuiRef: any = null;
   let compositorRef: SidebarCompositor | null = null;
+
+  // Live MCP status source: built-in pi registers mcp__<server>__<tool> for
+  // every tool of a connected server, so the tool registry is the live truth.
+  liveMcpToolsProvider = () => {
+    try {
+      const tools = pi.getAllTools?.();
+      if (!Array.isArray(tools)) return null;
+      return tools.filter((t: any) => typeof t?.name === "string" && t.name.startsWith("mcp__"));
+    } catch {
+      return null;
+    }
+  };
 
   const stopCavemanAnim = () => {
     if (cavemanTimer) { clearInterval(cavemanTimer); cavemanTimer = null; }
