@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.7] - 2026-10-04
+
+### Added
+
+- **Sidebar scrolling**: When the sidebar content is taller than the visible terminal rows (small terminals, or many todos / MCP servers / workspace files), the sidebar scrolls instead of silently clipping. The visible window shows `▲ N lines above` / `▼ N lines below` indicators, and the last line is always reachable without flicker.
+- **Scroll controls**: `/sidebar-scroll up | down | top | bottom | <lines>` command, plus keyboard shortcuts `Alt+Shift+Up/Down` and `Ctrl+Alt+Up/Down` (one nudge) and `Alt+PageUp/PageDown` (a page). These work in any TUI mode.
+- **`scrollSpeed` setting** (default 3, range 1–20) controls the nudge size; a page is 3× this. Set via `/sidebar-tui scroll <N>` (persisted) or the `PI_SIDEBAR_SCROLL_SPEED` env var (env wins over the file).
+
+### Changed
+
+- The compositor now forces a full sidebar repaint when pi's render emits a cursor-scroll / screen-clear sequence, so scrolled content never shows stale or misaligned rows.
+
 ## [1.7.6] - 2026-10-03
 
 ### Changed

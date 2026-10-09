@@ -19,13 +19,17 @@ export interface SidebarSettings {
   width: number;
   /** Max todos shown in the Todos panel before it caps to the last N (+ a "+N more" footer). */
   todosMax: number;
+  /** Number of lines to scroll per up/down nudge (default: 3). A page is 3x this. */
+  scrollSpeed: number;
 }
 
-export const DEFAULT_SIDEBAR_SETTINGS: SidebarSettings = { enabled: true, width: 45, todosMax: 10 };
+export const DEFAULT_SIDEBAR_SETTINGS: SidebarSettings = { enabled: true, width: 45, todosMax: 10, scrollSpeed: 3 };
 export const MIN_SIDEBAR_WIDTH = 10;
 export const MAX_SIDEBAR_WIDTH = 120;
 export const MIN_TODOS_MAX = 1;
 export const MAX_TODOS_MAX = 100;
+export const MIN_SCROLL_SPEED = 1;
+export const MAX_SCROLL_SPEED = 20;
 
 export function sidebarConfigPath(): string {
   return process.env["PI_SIDEBAR_CONFIG"] || join(agentDir(), "sidebar-tui.json");
@@ -99,36 +103,46 @@ export function getAutoCompactEnabled(options: AutoCompactReadOptions = {}): boo
   return value;
 }
 
-export function loadSidebarSettings(path: string = sidebarConfigPath()): SidebarSettings {
+function parseSettingsFile(path: string): Record<string, unknown> | null {
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch {
-    return { ...DEFAULT_SIDEBAR_SETTINGS };
+    return null;
   }
-
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === "object" && parsed !== null) return parsed as Record<string, unknown>;
+    return null;
   } catch {
-    return { ...DEFAULT_SIDEBAR_SETTINGS };
+    return null;
   }
-  if (typeof parsed !== "object" || parsed === null) {
-    return { ...DEFAULT_SIDEBAR_SETTINGS };
-  }
+}
 
-  const obj = parsed as Record<string, unknown>;
+export function loadSidebarSettings(path: string = sidebarConfigPath()): SidebarSettings {
+  const obj = parseSettingsFile(path);
   const settings: SidebarSettings = { ...DEFAULT_SIDEBAR_SETTINGS };
-  if (typeof obj["enabled"] === "boolean") {
-    settings.enabled = obj["enabled"];
+  if (obj) {
+    if (typeof obj["enabled"] === "boolean") {
+      settings.enabled = obj["enabled"];
+    }
+    const w = obj["width"];
+    if (typeof w === "number" && Number.isInteger(w) && w >= MIN_SIDEBAR_WIDTH && w <= MAX_SIDEBAR_WIDTH) {
+      settings.width = w;
+    }
+    const tm = obj["todosMax"];
+    if (typeof tm === "number" && Number.isInteger(tm) && tm >= MIN_TODOS_MAX && tm <= MAX_TODOS_MAX) {
+      settings.todosMax = tm;
+    }
+    const ss = obj["scrollSpeed"];
+    if (typeof ss === "number" && Number.isInteger(ss) && ss >= MIN_SCROLL_SPEED && ss <= MAX_SCROLL_SPEED) {
+      settings.scrollSpeed = ss;
+    }
   }
-  const w = obj["width"];
-  if (typeof w === "number" && Number.isInteger(w) && w >= MIN_SIDEBAR_WIDTH && w <= MAX_SIDEBAR_WIDTH) {
-    settings.width = w;
-  }
-  const tm = obj["todosMax"];
-  if (typeof tm === "number" && Number.isInteger(tm) && tm >= MIN_TODOS_MAX && tm <= MAX_TODOS_MAX) {
-    settings.todosMax = tm;
+  // Env override wins over both the file value and the default.
+  const envSpeed = process.env["PI_SIDEBAR_SCROLL_SPEED"] ? parseInt(process.env["PI_SIDEBAR_SCROLL_SPEED"], 10) : NaN;
+  if (!isNaN(envSpeed) && envSpeed >= MIN_SCROLL_SPEED && envSpeed <= MAX_SCROLL_SPEED) {
+    settings.scrollSpeed = envSpeed;
   }
   return settings;
 }

@@ -49,6 +49,10 @@ export class SidebarCompositor {
   private cachedWidth = 0;
   private cacheValid = false;
 
+  // Scroll offset for sidebar content when it overflows visible terminal rows.
+  private scrollTop = 0;
+  private maxScrollTop = 0;
+
   constructor(tui: any, getCtx: () => SidebarContext, sidebarWidth = 40) {
     this.tui = tui;
     this.terminal = tui.terminal;
@@ -107,7 +111,7 @@ export class SidebarCompositor {
             writable: true,
             value(this: any, data: string) {
               if (typeof data !== "string") return originalWrite.call(this, data);
-              if (/\x1b\[(?:2J|3J)/.test(data)) forceFullPaint = true;
+              if (/\x1b\[(?:2J|3J)|\n|\r\n|\x1b\[\d*[ST]|\x1bM/.test(data)) forceFullPaint = true;
               const sanitized = data
                 .replace(/\x1b\[\?2026[hl]/g, "")
                 .replace(/\x1b\[2K/g, `\x1b[${mainWidth}X`);
@@ -149,6 +153,63 @@ export class SidebarCompositor {
     this.paintInternal(false, true);
   }
 
+  // Maximum scroll offset: how many lines can be hidden above the viewport
+  // before the last line reaches the bottom. 0 when content fits.
+  private computeMaxScrollTop(): number {
+    const rawRows = this.terminal.rows;
+    const ctx = this.getCtx();
+    const hasCwd = Boolean(ctx.cwd);
+    const visiblePanelRows = hasCwd ? Math.max(1, rawRows - 1) : rawRows;
+    const totalLines = renderSidebar(ctx, this.sidebarWidth).length;
+    if (totalLines <= visiblePanelRows) return 0;
+    const contentRowsAtBottom = Math.max(1, visiblePanelRows - 1);
+    return Math.max(0, totalLines - contentRowsAtBottom);
+  }
+
+  getScrollTop(): number {
+    return this.scrollTop;
+  }
+
+  getMaxScrollTop(): number {
+    if (this.maxScrollTop === 0) {
+      this.maxScrollTop = this.computeMaxScrollTop();
+    }
+    return this.maxScrollTop;
+  }
+
+  // Column where the sidebar's left border sits (1-based). Used by input
+  // routing to decide whether the mouse is over the sidebar.
+  getSeparatorColumn(): number {
+    return this.rawColumns() - this.sidebarWidth;
+  }
+
+  scrollTo(top: number): void {
+    if (this.maxScrollTop === 0) {
+      this.maxScrollTop = this.computeMaxScrollTop();
+    }
+    const clamped = Math.max(0, Math.min(this.maxScrollTop, top));
+    if (clamped !== this.scrollTop || !this.cacheValid) {
+      this.scrollTop = clamped;
+      this.cacheValid = false;
+      this.paint();
+    }
+  }
+
+  scrollBy(delta: number): void {
+    this.scrollTo(this.scrollTop + delta);
+  }
+
+  scrollToTop(): void {
+    this.scrollTo(0);
+  }
+
+  scrollToBottom(): void {
+    if (this.maxScrollTop === 0) {
+      this.maxScrollTop = this.computeMaxScrollTop();
+    }
+    this.scrollTo(this.maxScrollTop);
+  }
+
   private rawColumns(): number {
     const d = this.originalColumnsDesc;
     const raw = d?.get
@@ -181,23 +242,71 @@ export class SidebarCompositor {
 
     const ctx = this.getCtx();
     const lines = renderSidebar(ctx, sw);
+    const totalLines = lines.length;
 
-    // Build the full set of formatted lines (panel rows + bottom cwd row).
+    // Build the cwd bottom row (pinned to the last terminal row when present).
     const home = process.env["HOME"] ?? "";
     const cwd = ctx.cwd ?? "";
+    const hasCwd = Boolean(cwd);
     const cwdDisplay = home && cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
     const cwdTruncated = visibleWidth(cwdDisplay) > sw - 1
       ? "…" + cwdDisplay.slice(-(sw - 2))
       : cwdDisplay;
     const cwdLine = dim(" " + cwdTruncated);
 
-    const formattedLines: string[] = [];
-    for (let row = 1; row <= rawRows; row++) {
-      if (row === rawRows && cwd) {
-        formattedLines.push(this.formatLine(cwdLine, sw));
-      } else {
-        formattedLines.push(this.formatLine(lines[row - 1], sw));
+    // Visible panel rows = all rows minus the pinned cwd row (when present).
+    const visiblePanelRows = hasCwd ? Math.max(1, rawRows - 1) : rawRows;
+
+    let panelLinesToRender: string[];
+
+    if (totalLines <= visiblePanelRows) {
+      // Content fits: no scrolling, no indicators.
+      this.maxScrollTop = 0;
+      this.scrollTop = 0;
+      panelLinesToRender = [];
+      for (let i = 0; i < visiblePanelRows; i++) {
+        panelLinesToRender.push(lines[i] ?? "");
       }
+    } else {
+      // Content overflows visible rows. At the bottom, 1 row is reserved for
+      // the top indicator, leaving (visiblePanelRows - 1) rows for content so
+      // the exact last line is reachable. Hence maxScrollTop is constant.
+      const contentRowsAtBottom = Math.max(1, visiblePanelRows - 1);
+      this.maxScrollTop = Math.max(0, totalLines - contentRowsAtBottom);
+      this.scrollTop = Math.max(0, Math.min(this.maxScrollTop, this.scrollTop));
+
+      const isAtTop = this.scrollTop === 0;
+      const isAtBottom = this.scrollTop >= this.maxScrollTop;
+
+      panelLinesToRender = [];
+      if (isAtTop) {
+        // Top: no top indicator; last panel row is the bottom indicator.
+        const contentRows = Math.max(1, visiblePanelRows - 1);
+        for (let i = 0; i < contentRows; i++) panelLinesToRender.push(lines[i] ?? "");
+        const linesBelow = Math.max(1, totalLines - contentRows);
+        panelLinesToRender.push(dim(` ▼ ${linesBelow} line${linesBelow === 1 ? "" : "s"} below`));
+      } else if (isAtBottom) {
+        // Bottom: top indicator shown; no bottom indicator so the last line shows.
+        panelLinesToRender.push(dim(` ▲ ${this.scrollTop} line${this.scrollTop === 1 ? "" : "s"} above`));
+        const contentRows = Math.max(1, visiblePanelRows - 1);
+        for (let i = 0; i < contentRows; i++) panelLinesToRender.push(lines[this.scrollTop + i] ?? "");
+      } else {
+        // Middle: both indicators shown.
+        panelLinesToRender.push(dim(` ▲ ${this.scrollTop} line${this.scrollTop === 1 ? "" : "s"} above`));
+        const contentRows = Math.max(1, visiblePanelRows - 2);
+        for (let i = 0; i < contentRows; i++) panelLinesToRender.push(lines[this.scrollTop + i] ?? "");
+        const linesBelow = Math.max(1, totalLines - (this.scrollTop + contentRows));
+        panelLinesToRender.push(dim(` ▼ ${linesBelow} line${linesBelow === 1 ? "" : "s"} below`));
+      }
+      while (panelLinesToRender.length < visiblePanelRows) panelLinesToRender.push("");
+    }
+
+    const formattedLines: string[] = [];
+    for (let i = 0; i < visiblePanelRows; i++) {
+      formattedLines.push(this.formatLine(panelLinesToRender[i], sw));
+    }
+    if (hasCwd) {
+      formattedLines.push(this.formatLine(cwdLine, sw));
     }
 
     // Repaint only rows that changed since the last paint. Skip the write
