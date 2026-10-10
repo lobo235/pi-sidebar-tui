@@ -44,7 +44,7 @@ function makeCtx(overrides: Partial<SidebarContext> = {}): SidebarContext {
 
 test("sidebar stacks all panels", () => {
   const ctx = makeCtx({});
-  const lines = renderSidebar(ctx, 40);
+  const { lines } = renderSidebar(ctx, 40);
   const text = lines.map(strip).join("\n");
   assert.ok(text.includes("Session"), "missing Session panel");
   assert.ok(text.includes("Todos"), "missing Todos panel");
@@ -53,7 +53,7 @@ test("sidebar stacks all panels", () => {
 
 test("sidebar has blank separator lines between panels", () => {
   const ctx = makeCtx({});
-  const lines = renderSidebar(ctx, 40);
+  const { lines } = renderSidebar(ctx, 40);
   assert.ok(lines.some(l => strip(l).trim() === ""), "no blank separator line found");
 });
 
@@ -62,7 +62,7 @@ test("sidebar all lines at most configured width", () => {
     sessionTitle: "a".repeat(200),
     todos: [{ id: "1", content: "b".repeat(200), status: "in_progress" }],
   });
-  const lines = renderSidebar(ctx, 30);
+  const { lines } = renderSidebar(ctx, 30);
   for (const line of lines) {
     const w = visibleWidth(strip(line));
     assert.ok(w <= 30, `line too wide (${w}): "${strip(line)}"`);
@@ -82,7 +82,7 @@ test("sidebar empty states for all panels render without error", () => {
     branch: null,
     workspaceFiles: [],
   });
-  const lines = renderSidebar(ctx, 36);
+  const { lines } = renderSidebar(ctx, 36);
   assert.ok(lines.length > 0);
   const text = lines.map(strip).join("\n");
   assert.ok(text.includes("waiting for first message"));

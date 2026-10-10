@@ -379,20 +379,20 @@ test("todos panel: empty shows (no todos)", () => {
   assert.ok(lines.map(strip).join("\n").includes("no todos"));
 });
 
-test("todos panel: empty reserves header + 7 rows", () => {
+test("todos panel: empty renders header + (no todos)", () => {
   const lines = renderTodosPanel(makeCtx({ todos: [] }), 40);
-  assert.equal(lines.length, 9, `expected 9 rows (2 header + 7), got ${lines.length}`);
+  assert.equal(lines.length, 3, `expected 3 rows (2 header + 1), got ${lines.length}`);
 });
 
-test("todos panel: few todos padded to 7 content rows", () => {
+test("todos panel: renders header + one row per todo (no cap)", () => {
   const lines = renderTodosPanel(makeCtx({ todos: mkTodos(3) }), 40);
-  assert.equal(lines.length, 9, `expected 9 rows, got ${lines.length}`);
+  assert.equal(lines.length, 5, `expected 5 rows (2 header + 3), got ${lines.length}`);
 });
 
-test("todos panel: grows beyond reserved when cap + footer exceeds 7", () => {
+test("todos panel: shows all todos when over the viewport (no more footer)", () => {
   const lines = renderTodosPanel(makeCtx({ todos: mkTodos(12), todosMax: 10 }), 40);
-  assert.equal(lines.length, 13, `expected 13 rows (2 header + 10 todos + footer), got ${lines.length}`);
-  assert.ok(lines.map(strip).join("\n").includes("+2 more"), `expected +2 more footer`);
+  assert.equal(lines.length, 14, `expected 14 rows (2 header + 12), got ${lines.length}`);
+  assert.ok(!lines.map(strip).join("\n").includes("more"), `no more footer expected`);
 });
 
 test("todos panel: header count is done/total", () => {
@@ -486,14 +486,7 @@ test("selectTodosToShow: in-progress first, then most recent", () => {
   assert.deepEqual(selectTodosToShow(t, 3).map(x => x.id), ["3", "6", "7"]);
 });
 
-test("todos panel: caps to todosMax with '+N more' footer", () => {
-  const text = renderTodosPanel(makeCtx({ todos: mkTodos(8), todosMax: 5 }), 40).map(strip).join("\n");
-  assert.ok(text.includes("task 8"), `expected most recent, got: ${text}`);
-  assert.ok(!text.includes("task 3"), `task 3 should be hidden, got: ${text}`);
-  assert.ok(text.includes("+3 more"), `expected +3 more footer, got: ${text}`);
-});
-
-test("todos panel: in-progress floated to top within cap", () => {
+test("todos panel: shows all todos in natural order (no cap, no float)", () => {
   const todos: TodoItem[] = [
     { id: "1", content: "old-pending", status: "pending" },
     { id: "2", content: "the-active", status: "in_progress" },
@@ -503,9 +496,9 @@ test("todos panel: in-progress floated to top within cap", () => {
     { id: "6", content: "recent-4", status: "pending" },
   ];
   const lines = renderTodosPanel(makeCtx({ todos, todosMax: 3 }), 40).map(strip);
-  const shown = lines.filter(l => /the-active|recent-/.test(l));
-  assert.equal(shown.length, 3, `expected 3 shown, got: ${lines.join("|")}`);
-  assert.ok(shown[0].includes("the-active"), `in-progress should be first, got: ${shown[0]}`);
+  // All six shown; natural order (old-pending before the-active), no float.
+  assert.equal(lines.filter(l => /old-pending|the-active|recent-/.test(l)).length, 6);
+  assert.ok(lines.findIndex(l => l.includes("old-pending")) < lines.findIndex(l => l.includes("the-active")));
 });
 
 test("todos panel: no footer under cap", () => {
@@ -548,7 +541,7 @@ test("workspace panel: additions and deletions shows +N -M", () => {
   assert.ok(text.includes("-3"), `missing -3, got: ${text}`);
 });
 
-test("workspace panel: 16 files capped to 15", () => {
+test("workspace panel: shows all files (no 15 cap)", () => {
   const files: WorkspaceFile[] = Array.from({ length: 16 }, (_, i) => ({
     path: `src/file${i}.ts`,
     added: 1,
@@ -557,7 +550,7 @@ test("workspace panel: 16 files capped to 15", () => {
   const ctx = makeCtx({ branch: "main", workspaceFiles: files });
   const lines = renderWorkspacePanel(ctx, 50);
   const fileLines = lines.filter(l => strip(l).includes("src/file"));
-  assert.equal(fileLines.length, 15, `expected 15 file lines, got ${fileLines.length}`);
+  assert.equal(fileLines.length, 16, `expected 16 file lines, got ${fileLines.length}`);
 });
 
 test("workspace panel: header contains branch name", () => {

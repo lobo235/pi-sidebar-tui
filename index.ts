@@ -2,7 +2,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadSidebarSettings, getAutoCompactEnabled, saveSidebarSettings, MIN_TODOS_MAX, MAX_TODOS_MAX, MIN_SCROLL_SPEED, MAX_SCROLL_SPEED } from "./config.ts";
 import type { TodoItem, SidebarContext, CtxSample } from "./types.ts";
 import { parseTodos, reconstructTodosFromBranch } from "./parse-todos.ts";
-import { renderSidebar } from "./sidebar.ts";
 import { getWorkspaceData, invalidateWorkspaceCache } from "./workspace.ts";
 import { SidebarCompositor } from "./compositor.ts";
 import { getMcpServers, invalidateMcpCache, type LiveMcpTool } from "./mcp.ts";
@@ -639,7 +638,9 @@ export default function piSidebar(pi: ExtensionAPI) {
   // Sidebar scrolling. Works in any TUI mode (these are pi shortcuts, not
   // wheel events). The whole sidebar is one scroll region for now; the
   // compositor clamps to the visible overflow.
-  const scrollByLines = (delta: number) => { compositorRef?.scrollBy(delta); };
+  // Keyboard scrolling targets the focused panel (last one the mouse scrolled,
+  // else the first scrollable panel present).
+  const scrollByLines = (delta: number) => { compositorRef?.scrollFocused(delta); };
   const pageLines = () => scrollSpeed * 3;
 
   pi.registerCommand("sidebar-scroll", {
@@ -651,17 +652,17 @@ export default function piSidebar(pi: ExtensionAPI) {
       }
       const arg = args?.trim().toLowerCase() || "down";
       if (arg === "up") {
-        compositorRef.scrollBy(-scrollSpeed);
+        compositorRef.scrollFocused(-scrollSpeed);
       } else if (arg === "down") {
-        compositorRef.scrollBy(scrollSpeed);
+        compositorRef.scrollFocused(scrollSpeed);
       } else if (arg === "top" || arg === "start") {
-        compositorRef.scrollToTop();
+        compositorRef.scrollFocused(-100000);
       } else if (arg === "bottom" || arg === "end") {
-        compositorRef.scrollToBottom();
+        compositorRef.scrollFocused(100000);
       } else {
         const n = parseInt(arg, 10);
         if (!isNaN(n)) {
-          compositorRef.scrollBy(n);
+          compositorRef.scrollFocused(n);
         } else {
           (ctx as any).ui?.notify?.("Usage: /sidebar-scroll up | down | top | bottom | <lines>", "warning");
           return;

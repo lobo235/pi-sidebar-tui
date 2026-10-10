@@ -53,21 +53,23 @@ The sidebar activates automatically when a session starts. Toggle visibility wit
 /sidebar-tui on        # Enable sidebar
 /sidebar-tui off       # Disable sidebar
 /sidebar-tui width 45  # Set sidebar width (10-120)
-/sidebar-tui todos 10  # Set max visible todos (1-100)
-/sidebar-tui scroll 3  # Set scroll nudge size in lines (1-20, default 3)
+/sidebar-tui todos 7   # Set the todos panel viewport height (1-100, default 7)
+/sidebar-tui scroll 3  # Set keyboard scroll nudge size in lines (1-20, default 3)
 
-/sidebar-scroll up      # Scroll sidebar up one nudge
-/sidebar-scroll down    # Scroll sidebar down one nudge
-/sidebar-scroll top     # Scroll to top
-/sidebar-scroll bottom  # Scroll to bottom
-/sidebar-scroll 10      # Scroll by N lines
+/sidebar-scroll up      # Scroll the focused panel up one nudge
+/sidebar-scroll down    # Scroll the focused panel down one nudge
+/sidebar-scroll top     # Scroll the focused panel to the top
+/sidebar-scroll bottom  # Scroll the focused panel to the bottom
+/sidebar-scroll 10      # Scroll the focused panel by N lines
 
 Ctrl+Shift+T            # Toggle sidebar on/off (rebind in ~/.pi/agent/keybindings.json)
-Alt+Shift+Up / Down     # Scroll sidebar up / down one nudge (Ctrl+Alt+Up / Down too)
-Alt+PageUp / PageDown   # Scroll sidebar a page (3x the nudge size)
+Alt+Shift+Up / Down     # Scroll the focused panel up / down one nudge (Ctrl+Alt+Up / Down too)
+Alt+PageUp / PageDown   # Scroll the focused panel a page (3x the nudge size)
 ```
 
-When the sidebar content is taller than the visible rows (small terminal, or many todos / MCP servers / workspace files), it scrolls with `▲ N lines above` / `▼ N lines below` indicators; otherwise it renders top-aligned with no indicators. Scrolling only has an effect once the content overflows.
+The **Session** panel stays pinned at the top. The **Todos**, **MCP**, and **Workspace** panels each scroll **independently** when their content is taller than their own window (small terminal, or many todos / MCP servers / workspace files). Each scrolling panel shows `▲ N lines above` / `▼ N lines below` indicators; panels that fit render in full with no indicators. The scrollable panels share the available rows and fill down to the cwd row, so there's no dead blank band above it when the content is long enough (on a very short terminal the panels are squeezed down to fit, or clip, rather than pushing the whole sidebar off-screen).
+
+**Scrolling:** the mouse wheel over a panel scrolls that panel (fullscreen mode only) and focuses it. The keyboard (`/sidebar-scroll`, `Alt+Shift+Up/Down`, `Alt+PageUp/Down`) scrolls the *focused* panel — the last one you scrolled with the mouse, or the first scrollable panel if you haven't yet.
 
 Set custom session title:
 
@@ -80,7 +82,7 @@ Set custom session title:
 | Env var | Default | Description |
 | --- | --- | --- |
 | `PI_SIDEBAR_BG` | *(unset)* | Paint the sidebar with an opaque `#rrggbb` background. Unset (default) leaves the terminal background untouched so terminal transparency shows through. Set e.g. `PI_SIDEBAR_BG="#000000"` to hide scroll flash on opaque terminals. |
-| `PI_SIDEBAR_SCROLL_SPEED` | `3` | Lines per scroll nudge (1-20). Overrides the persisted `scrollSpeed`; a page is 3x this. |
+| `PI_SIDEBAR_SCROLL_SPEED` | `3` | Lines per keyboard scroll nudge (1-20). Overrides the persisted `scrollSpeed`; a page is 3x this. The mouse wheel uses the terminal's native scroll amount. |
 
 ## Requirements
 

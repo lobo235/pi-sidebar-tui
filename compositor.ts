@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { SidebarContext } from "./types.ts";
-import { renderSidebar } from "./sidebar.ts";
+import { renderSidebar, type PanelSlot } from "./sidebar.ts";
 import { dim } from "./colors.ts";
 
 // No background by default so terminal transparency shows through.
@@ -49,9 +49,15 @@ export class SidebarCompositor {
   private cachedWidth = 0;
   private cacheValid = false;
 
-  // Scroll offset for sidebar content when it overflows visible terminal rows.
-  private scrollTop = 0;
-  private maxScrollTop = 0;
+  // Per-panel scroll offset (content rows hidden above the window) and the
+  // last rendered panel layout (row ranges + each panel's maxOffset).
+  private panelOffsets = new Map<string, number>();
+  private layout: PanelSlot[] = [];
+
+  // Focused panel for keyboard scrolling (set by the mouse, defaults to the
+  // first scrollable panel present). Plus the original routeWheel we wrap.
+  private focusedPanel: string | null = null;
+  private originalRouteWheel: ((event: any, delta: number) => void) | null = null;
 
   constructor(tui: any, getCtx: () => SidebarContext, sidebarWidth = 40) {
     this.tui = tui;
@@ -146,6 +152,36 @@ export class SidebarCompositor {
         return result;
       };
     }
+
+    this.installMouseWheel();
+  }
+
+  // Wrap the TUI's wheel routing so a wheel over the sidebar columns scrolls
+  // the panel under the cursor instead of the main viewport. Fullscreen mode
+  // only (routeWheel is the alt-screen's fallback wheel handler).
+  private installMouseWheel(): void {
+    if (typeof this.tui.routeWheel !== "function") return;
+    const original = this.tui.routeWheel;
+    this.originalRouteWheel = original;
+    const self = this;
+    this.tui.routeWheel = function (event: any, delta: number) {
+      if (self.disposed) return original.call(self.tui, event, delta);
+      const sepCol = self.getSeparatorColumn(); // 1-based
+      const x = typeof event?.x === "number" ? event.x : -1; // 0-based
+      const y = typeof event?.y === "number" ? event.y : -1; // 0-based
+      if (x >= sepCol - 1) {
+        // Over the sidebar: scroll the panel under the cursor (0-based y -> 1-based row).
+        const row = y + 1;
+        if (self.scrollPanelAtRow(row, delta)) {
+          const id = self.panelAtRow(row);
+          if (id) self.setFocusedPanel(id);
+          return; // consumed: don't scroll the main viewport
+        }
+        self.scrollFocused(delta);
+        return;
+      }
+      return original.call(self.tui, event, delta);
+    };
   }
 
   paint(): void {
@@ -153,61 +189,65 @@ export class SidebarCompositor {
     this.paintInternal(false, true);
   }
 
-  // Maximum scroll offset: how many lines can be hidden above the viewport
-  // before the last line reaches the bottom. 0 when content fits.
-  private computeMaxScrollTop(): number {
-    const rawRows = this.terminal.rows;
-    const ctx = this.getCtx();
-    const hasCwd = Boolean(ctx.cwd);
-    const visiblePanelRows = hasCwd ? Math.max(1, rawRows - 1) : rawRows;
-    const totalLines = renderSidebar(ctx, this.sidebarWidth).length;
-    if (totalLines <= visiblePanelRows) return 0;
-    const contentRowsAtBottom = Math.max(1, visiblePanelRows - 1);
-    return Math.max(0, totalLines - contentRowsAtBottom);
+  getPanelOffset(id: string): number {
+    return this.panelOffsets.get(id) ?? 0;
   }
 
-  getScrollTop(): number {
-    return this.scrollTop;
+  getPanelMax(id: string): number {
+    const slot = this.layout.find((s) => s.id === id);
+    return slot?.maxOffset ?? 0;
   }
 
-  getMaxScrollTop(): number {
-    if (this.maxScrollTop === 0) {
-      this.maxScrollTop = this.computeMaxScrollTop();
-    }
-    return this.maxScrollTop;
-  }
-
-  // Column where the sidebar's left border sits (1-based). Used by input
-  // routing to decide whether the mouse is over the sidebar.
-  getSeparatorColumn(): number {
-    return this.rawColumns() - this.sidebarWidth;
-  }
-
-  scrollTo(top: number): void {
-    if (this.maxScrollTop === 0) {
-      this.maxScrollTop = this.computeMaxScrollTop();
-    }
-    const clamped = Math.max(0, Math.min(this.maxScrollTop, top));
-    if (clamped !== this.scrollTop || !this.cacheValid) {
-      this.scrollTop = clamped;
+  scrollPanelBy(id: string, delta: number): void {
+    const max = this.getPanelMax(id);
+    const next = Math.max(0, Math.min(max, this.getPanelOffset(id) + delta));
+    if (next !== this.getPanelOffset(id) || !this.cacheValid) {
+      this.panelOffsets.set(id, next);
       this.cacheValid = false;
       this.paint();
     }
   }
 
-  scrollBy(delta: number): void {
-    this.scrollTo(this.scrollTop + delta);
-  }
-
-  scrollToTop(): void {
-    this.scrollTo(0);
-  }
-
-  scrollToBottom(): void {
-    if (this.maxScrollTop === 0) {
-      this.maxScrollTop = this.computeMaxScrollTop();
+  // Scrollable panel id whose row range contains `row` (1-based), or null.
+  panelAtRow(row: number): string | null {
+    const r = Math.floor(row);
+    for (const slot of this.layout) {
+      if (slot.scrollable && r > slot.startRow && r <= slot.endRow) return slot.id;
     }
-    this.scrollTo(this.maxScrollTop);
+    return null;
+  }
+
+  // Scroll the panel under the cursor. Returns true when a panel was hit.
+  scrollPanelAtRow(row: number, delta: number): boolean {
+    const id = this.panelAtRow(row);
+    if (!id) return false;
+    this.scrollPanelBy(id, delta);
+    return true;
+  }
+
+  // Column where the sidebar's left border sits (1-based). Input routing uses
+  // it to decide whether the mouse is over the sidebar.
+  getSeparatorColumn(): number {
+    return this.rawColumns() - this.sidebarWidth;
+  }
+
+  getFocusedPanel(): string | null {
+    if (this.focusedPanel && this.layout.some((s) => s.id === this.focusedPanel && s.scrollable)) {
+      return this.focusedPanel;
+    }
+    return this.layout.find((s) => s.scrollable)?.id ?? null;
+  }
+
+  setFocusedPanel(id: string): void {
+    this.focusedPanel = id;
+  }
+
+  // Scroll the focused panel (keyboard path). Returns false when no panel.
+  scrollFocused(delta: number): boolean {
+    const id = this.getFocusedPanel();
+    if (!id) return false;
+    this.scrollPanelBy(id, delta);
+    return true;
   }
 
   private rawColumns(): number {
@@ -241,8 +281,6 @@ export class SidebarCompositor {
     const sidebarCol = sepCol + 1;
 
     const ctx = this.getCtx();
-    const lines = renderSidebar(ctx, sw);
-    const totalLines = lines.length;
 
     // Build the cwd bottom row (pinned to the last terminal row when present).
     const home = process.env["HOME"] ?? "";
@@ -257,48 +295,18 @@ export class SidebarCompositor {
     // Visible panel rows = all rows minus the pinned cwd row (when present).
     const visiblePanelRows = hasCwd ? Math.max(1, rawRows - 1) : rawRows;
 
-    let panelLinesToRender: string[];
+    // Adaptive render: the water-filler fits the panels into visiblePanelRows,
+    // and each panel scrolls internally when its content exceeds its window.
+    // The result always fits, so we paint top-aligned with no whole-sidebar
+    // offset. The cwd row is pinned to the final terminal row.
+    const offsetRecord: Record<string, number> = {};
+    for (const [id, off] of this.panelOffsets) offsetRecord[id] = off;
+    const { lines, layout } = renderSidebar(ctx, sw, visiblePanelRows, offsetRecord);
+    this.layout = layout;
 
-    if (totalLines <= visiblePanelRows) {
-      // Content fits: no scrolling, no indicators.
-      this.maxScrollTop = 0;
-      this.scrollTop = 0;
-      panelLinesToRender = [];
-      for (let i = 0; i < visiblePanelRows; i++) {
-        panelLinesToRender.push(lines[i] ?? "");
-      }
-    } else {
-      // Content overflows visible rows. At the bottom, 1 row is reserved for
-      // the top indicator, leaving (visiblePanelRows - 1) rows for content so
-      // the exact last line is reachable. Hence maxScrollTop is constant.
-      const contentRowsAtBottom = Math.max(1, visiblePanelRows - 1);
-      this.maxScrollTop = Math.max(0, totalLines - contentRowsAtBottom);
-      this.scrollTop = Math.max(0, Math.min(this.maxScrollTop, this.scrollTop));
-
-      const isAtTop = this.scrollTop === 0;
-      const isAtBottom = this.scrollTop >= this.maxScrollTop;
-
-      panelLinesToRender = [];
-      if (isAtTop) {
-        // Top: no top indicator; last panel row is the bottom indicator.
-        const contentRows = Math.max(1, visiblePanelRows - 1);
-        for (let i = 0; i < contentRows; i++) panelLinesToRender.push(lines[i] ?? "");
-        const linesBelow = Math.max(1, totalLines - contentRows);
-        panelLinesToRender.push(dim(` ▼ ${linesBelow} line${linesBelow === 1 ? "" : "s"} below`));
-      } else if (isAtBottom) {
-        // Bottom: top indicator shown; no bottom indicator so the last line shows.
-        panelLinesToRender.push(dim(` ▲ ${this.scrollTop} line${this.scrollTop === 1 ? "" : "s"} above`));
-        const contentRows = Math.max(1, visiblePanelRows - 1);
-        for (let i = 0; i < contentRows; i++) panelLinesToRender.push(lines[this.scrollTop + i] ?? "");
-      } else {
-        // Middle: both indicators shown.
-        panelLinesToRender.push(dim(` ▲ ${this.scrollTop} line${this.scrollTop === 1 ? "" : "s"} above`));
-        const contentRows = Math.max(1, visiblePanelRows - 2);
-        for (let i = 0; i < contentRows; i++) panelLinesToRender.push(lines[this.scrollTop + i] ?? "");
-        const linesBelow = Math.max(1, totalLines - (this.scrollTop + contentRows));
-        panelLinesToRender.push(dim(` ▼ ${linesBelow} line${linesBelow === 1 ? "" : "s"} below`));
-      }
-      while (panelLinesToRender.length < visiblePanelRows) panelLinesToRender.push("");
+    const panelLinesToRender: string[] = [];
+    for (let i = 0; i < visiblePanelRows; i++) {
+      panelLinesToRender.push(lines[i] ?? "");
     }
 
     const formattedLines: string[] = [];
@@ -366,6 +374,11 @@ export class SidebarCompositor {
 
     if (this.originalDoRender !== null) {
       this.tui.doRender = this.originalDoRender;
+    }
+
+    if (this.originalRouteWheel !== null) {
+      this.tui.routeWheel = this.originalRouteWheel;
+      this.originalRouteWheel = null;
     }
   }
 }

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SidebarCompositor } from "../compositor.ts";
+import { renderSidebar } from "../sidebar.ts";
 import type { SidebarContext } from "../types.ts";
 
 function makeCtx(overrides: Partial<SidebarContext> = {}): SidebarContext {
@@ -37,13 +38,12 @@ function makeCtx(overrides: Partial<SidebarContext> = {}): SidebarContext {
   };
 }
 
-// 30 todos (todosMax 100) + a branch-less workspace => the last line of the
-// whole sidebar is the workspace "(not a git repo)" row. Total lines far
-// exceed a 15-row terminal, so the content overflows.
-function tallCtx(tick = 0): SidebarContext {
+// 30 todos (todosMax 100) + branch-less workspace => the todos panel alone is
+// taller than any realistic viewport, so it scrolls internally.
+function tallCtx(): SidebarContext {
   const todos = Array.from({ length: 30 }, (_, i) => ({
     id: String(i + 1),
-    content: i === 0 ? `line one (tick ${tick})` : `todo number ${i + 1}`,
+    content: `todo number ${i + 1}`,
     status: "pending" as const,
   }));
   return makeCtx({ todos, todosMax: 100, branch: null, workspaceFiles: [] });
@@ -60,85 +60,168 @@ function makeTerminal(cols: number, rows: number) {
   };
 }
 
-function makeComp(getCtx: () => SidebarContext, rows: number, width: number, cols = 80) {
+// A fake TUI whose routeWheel records every call that falls through to it.
+function makeComp(ctx: SidebarContext, rows: number, width: number, cols = 80) {
   const terminal = makeTerminal(cols, rows);
-  const tui: any = { terminal, mode: "fullscreen", doRender() {} };
-  const comp = new SidebarCompositor(tui, getCtx, width);
+  const routeWheelCalls: { event: any; delta: number }[] = [];
+  const tui: any = {
+    terminal,
+    mode: "fullscreen",
+    doRender() {},
+    routeWheel(event: any, delta: number) {
+      routeWheelCalls.push({ event, delta });
+    },
+  };
+  const comp = new SidebarCompositor(tui, () => ctx, width);
   comp.install();
-  return { comp, terminal };
+  return { comp, terminal, tui, routeWheelCalls };
 }
 
-test("scroll state: no overflow => maxScrollTop 0 and scroll stays clamped at 0", () => {
-  const { comp } = makeComp(() => makeCtx({}), 40, 25);
-  assert.equal(comp.getScrollTop(), 0);
-  assert.equal(comp.getMaxScrollTop(), 0);
-  comp.scrollTo(999);
-  assert.equal(comp.getScrollTop(), 0);
+test("renderSidebar fits visibleRows (adaptive viewports) once past the min panel height", () => {
+  const ctx = tallCtx();
+  // The minimum total (session + headers + separators + empty content) is 22
+  // rows for this context; at/above it the water-filler always fits.
+  for (const visibleRows of [22, 24, 28, 39, 59, 99]) {
+    const { lines } = renderSidebar(ctx, 25, visibleRows, {});
+    assert.ok(lines.length <= visibleRows, `visibleRows=${visibleRows}: ${lines.length} lines > ${visibleRows}`);
+  }
 });
 
-test("scroll state: overflowing content => maxScrollTop positive", () => {
-  const { comp } = makeComp(() => tallCtx(), 15, 25);
-  assert.ok(comp.getMaxScrollTop() > 0, "maxScrollTop should be positive for overflow");
-  assert.equal(comp.getScrollTop(), 0);
+test("renderSidebar fits visibleRows even when a panel is scrolled to the middle", () => {
+  const ctx = tallCtx();
+  // offset=1 lands in the middle window (not at top) for the small viewports
+  // where the todos panel is squeezed to vp=1 — the case that would otherwise
+  // emit two indicator rows.
+  for (const visibleRows of [22, 24, 28, 39]) {
+    const { lines } = renderSidebar(ctx, 25, visibleRows, { todos: 1 });
+    assert.ok(lines.length <= visibleRows, `visibleRows=${visibleRows}: ${lines.length} lines > ${visibleRows}`);
+  }
 });
 
-test("scrollBy clamps to [0, maxScrollTop]", () => {
-  const { comp } = makeComp(() => tallCtx(), 15, 25);
-  const max = comp.getMaxScrollTop();
-  comp.scrollBy(9999);
-  assert.equal(comp.getScrollTop(), max);
-  comp.scrollBy(-99999);
-  assert.equal(comp.getScrollTop(), 0);
+test("scrollable panels fill the available rows (no dead gap) when content is plentiful", () => {
+  // 15 todos (capped at 10) + 20 workspace files + 1 mcp server: enough
+  // content that the scrollable panels absorb every spare row down to the cwd.
+  const ctx = makeCtx({
+    branch: "main",
+    todos: Array.from({ length: 15 }, (_, i) => ({ id: String(i + 1), content: `todo ${i + 1}`, status: "pending" as const })),
+    todosMax: 10,
+    workspaceFiles: Array.from({ length: 20 }, (_, i) => ({ path: `src/f${i}.ts`, added: 1, removed: 0 })),
+    mcpServers: [{ name: "ctx7", connected: true, directCount: 3, totalCount: 5, tokenEstimate: 100, disabled: false }],
+  });
+  for (const visibleRows of [30, 40, 50]) {
+    const { lines } = renderSidebar(ctx, 25, visibleRows, {});
+    assert.equal(lines.length, visibleRows, `expected panels to fill ${visibleRows} rows, got ${lines.length}`);
+  }
 });
 
-test("scrollToBottom / scrollToTop", () => {
-  const { comp } = makeComp(() => tallCtx(), 15, 25);
-  const max = comp.getMaxScrollTop();
-  comp.scrollToBottom();
-  assert.equal(comp.getScrollTop(), max);
-  comp.scrollToTop();
-  assert.equal(comp.getScrollTop(), 0);
-});
-
-test("getSeparatorColumn returns rawColumns - sidebarWidth", () => {
-  const { comp } = makeComp(() => makeCtx({}), 15, 25, 80);
-  assert.equal(comp.getSeparatorColumn(), 80 - 25);
-});
-
-test("no indicators when content fits", () => {
-  const { comp, terminal } = makeComp(() => makeCtx({}), 40, 25);
+test("compositor clips to the terminal on a very short window (never overflows)", () => {
+  const { comp, terminal } = makeComp(tallCtx(), 10, 25);
   comp.paint();
+  const seps = terminal.writes.join("").split("│").length - 1;
+  assert.ok(seps <= 10, `should not overflow a 10-row terminal, got ${seps} rows`);
+});
+
+test("no overflow => all maxOffset 0 and no indicators", () => {
+  const { comp, terminal } = makeComp(makeCtx({}), 40, 25);
+  comp.paint();
+  assert.equal(comp.getPanelMax("todos"), 0);
   const out = terminal.writes.join("");
   assert.ok(!out.includes("lines below"), "unexpected bottom indicator");
   assert.ok(!out.includes("lines above"), "unexpected top indicator");
 });
 
-test("renders bottom indicator at top when overflowing", () => {
-  const { comp, terminal } = makeComp(() => tallCtx(), 15, 25);
+test("overflowing todos => maxOffset > 0 and scrollPanelBy clamps", () => {
+  const { comp } = makeComp(tallCtx(), 40, 25);
   comp.paint();
-  const out = terminal.writes.join("");
-  assert.ok(out.includes("lines below"), "expected bottom indicator at top");
-  assert.ok(!out.includes("lines above"), "no top indicator expected at top");
+  const max = comp.getPanelMax("todos");
+  assert.ok(max > 0, `expected todos maxOffset > 0, got ${max}`);
+  comp.scrollPanelBy("todos", 99999);
+  assert.equal(comp.getPanelOffset("todos"), max);
+  comp.scrollPanelBy("todos", -99999);
+  assert.equal(comp.getPanelOffset("todos"), 0);
 });
 
-test("renders top indicator when scrolled down (middle)", () => {
-  const { comp, terminal } = makeComp(() => tallCtx(), 15, 25);
-  const max = comp.getMaxScrollTop();
-  // scrollBy triggers the first (full) paint at the new offset.
-  comp.scrollBy(Math.max(1, Math.floor(max / 2)));
+test("scrolling todos shows a top indicator", () => {
+  const { comp, terminal } = makeComp(tallCtx(), 40, 25);
+  comp.paint();
+  const max = comp.getPanelMax("todos");
+  assert.ok(max > 0);
+  comp.scrollPanelBy("todos", Math.max(1, Math.floor(max / 2)));
   const out = terminal.writes.join("");
-  assert.ok(out.includes("lines above"), "expected top indicator in middle");
-  assert.ok(out.includes("lines below"), "expected bottom indicator in middle");
+  assert.ok(out.includes("lines above"), "expected top indicator after scrolling");
 });
 
-test("at bottom: last line visible, no bottom indicator", () => {
-  const { comp, terminal } = makeComp(() => tallCtx(), 15, 25);
-  // scrollToBottom triggers the first (full) paint at the bottom offset.
-  comp.scrollToBottom();
-  const out = terminal.writes.join("");
-  assert.ok(out.includes("not a git repo"), "last line should be visible at bottom");
-  assert.ok(!out.includes("lines below"), "no bottom indicator expected at bottom");
-  assert.ok(out.includes("lines above"), "top indicator expected at bottom");
+test("panelAtRow maps a todos content row to 'todos' and a session row to null", () => {
+  const ctx = tallCtx();
+  const { comp } = makeComp(ctx, 40, 25);
+  comp.paint();
+  // The compositor renders for visiblePanelRows = rows - 1 (cwd present).
+  const { layout } = renderSidebar(ctx, 25, 39, {});
+  const todosSlot = layout.find((s) => s.id === "todos");
+  const sessionSlot = layout.find((s) => s.id === "session");
+  assert.ok(todosSlot && sessionSlot, "expected todos + session slots");
+  const todosRow = todosSlot!.startRow + 3; // 1-based content row (after 2 header rows)
+  assert.equal(comp.panelAtRow(todosRow), "todos");
+  assert.equal(comp.panelAtRow(sessionSlot!.startRow + 1), null, "session is pinned (not scrollable)");
+});
+
+test("scrollPanelAtRow scrolls the panel under the cursor, false off-panels", () => {
+  const ctx = tallCtx();
+  const { comp } = makeComp(ctx, 40, 25);
+  comp.paint();
+  const { layout } = renderSidebar(ctx, 25, 39, {});
+  const todosSlot = layout.find((s) => s.id === "todos")!;
+  const row = todosSlot.startRow + 3;
+  assert.equal(comp.scrollPanelAtRow(row, 3), true, "should hit a panel");
+  assert.ok(comp.getPanelOffset("todos") > 0, "todos should have scrolled");
+  assert.equal(comp.scrollPanelAtRow(999, 3), false, "off-panel row should miss");
+});
+
+test("scrollFocused targets the first scrollable panel by default", () => {
+  const { comp } = makeComp(tallCtx(), 40, 25);
+  comp.paint();
+  assert.equal(comp.getFocusedPanel(), "todos", "first scrollable present should be todos");
+  assert.equal(comp.scrollFocused(2), true);
+  assert.ok(comp.getPanelOffset("todos") > 0);
+});
+
+test("mouse wheel over sidebar scrolls the panel and consumes; over main falls through", () => {
+  const ctx = tallCtx();
+  const { comp, tui, routeWheelCalls } = makeComp(ctx, 40, 25);
+  comp.paint();
+  const { layout } = renderSidebar(ctx, 25, 39, {});
+  const todosSlot = layout.find((s) => s.id === "todos")!;
+  const y0 = todosSlot.startRow + 2; // 0-based y for a todos content row
+  // sepCol = 80 - 25 = 55 (1-based); sidebar 0-based x >= 54.
+  tui.routeWheel({ x: 60, y: y0, direction: 1, button: 0 }, 3);
+  assert.ok(comp.getPanelOffset("todos") > 0, "todos should scroll from the wheel");
+  assert.equal(comp.getFocusedPanel(), "todos", "wheel should focus the panel it scrolled");
+  assert.equal(routeWheelCalls.length, 0, "sidebar wheel should be consumed");
+  tui.routeWheel({ x: 5, y: 5, direction: 1, button: 0 }, 3);
+  assert.equal(routeWheelCalls.length, 1, "main-viewport wheel should fall through");
+});
+
+test("dispose restores the original routeWheel", () => {
+  const ctx = tallCtx();
+  const terminal = makeTerminal(80, 40);
+  const routeWheelCalls: number[] = [];
+  const tui: any = {
+    terminal,
+    mode: "fullscreen",
+    doRender() {},
+    routeWheel() {
+      routeWheelCalls.push(1);
+    },
+  };
+  const original = tui.routeWheel;
+  const comp = new SidebarCompositor(tui, () => ctx, 25);
+  comp.install();
+  assert.notEqual(tui.routeWheel, original, "routeWheel should be wrapped");
+  comp.dispose();
+  assert.equal(tui.routeWheel, original, "routeWheel should be restored on dispose");
+  // After dispose, the original handles everything (records the call).
+  tui.routeWheel({ x: 60, y: 5, direction: 1, button: 0 }, 3);
+  assert.equal(routeWheelCalls.length, 1);
 });
 
 test("doRender wrapper forces full repaint when pi emits a cursor-scroll sequence", () => {
@@ -147,8 +230,6 @@ test("doRender wrapper forces full repaint when pi emits a cursor-scroll sequenc
   const tui: any = {
     terminal,
     mode: "fullscreen",
-    // Emits a reverse-index (\x1bM) scroll sequence only when flagged, to
-    // simulate pi scrolling the main area during its own render cycle.
     doRender() {
       if (emitScrollSeq) terminal.write("\x1bM");
     },
@@ -157,37 +238,17 @@ test("doRender wrapper forces full repaint when pi emits a cursor-scroll sequenc
   comp.install();
   const countSeps = () => terminal.writes.join("").split("│").length - 1;
 
-  // First render: full paint (every row gets a border separator).
   tui.doRender();
   assert.equal(countSeps(), 15, "first render should paint all rows");
 
-  // Second render, unchanged, no scroll seq: differential paint writes no rows.
   terminal.writes.length = 0;
   tui.doRender();
   assert.equal(countSeps(), 0, "unchanged render should paint no rows");
 
-  // Third render, unchanged, but pi emitted a cursor-scroll seq: full repaint.
   emitScrollSeq = true;
   terminal.writes.length = 0;
   tui.doRender();
   assert.equal(countSeps(), 15, "scroll sequence should force a full repaint");
 
   comp.dispose();
-});
-
-test("does not oscillate between last line and indicator on repeated paints at bottom", () => {
-  const { comp, terminal } = makeComp(() => tallCtx(0), 15, 25);
-  const c = comp as any; // reach private scroll state for repeated-paint assertions
-  comp.scrollToBottom();
-  for (let frame = 1; frame <= 5; frame++) {
-    terminal.writes.length = 0;
-    // Vary a non-last line (todo #1) and force a full paint so the whole
-    // frame lands in the buffer for assertion.
-    c.getCtx = () => tallCtx(frame);
-    c.cacheValid = false;
-    comp.paint();
-    const out = terminal.writes.join("");
-    assert.ok(out.includes("not a git repo"), `frame ${frame}: last line should stay visible`);
-    assert.ok(!out.includes("lines below"), `frame ${frame}: should not flicker with bottom indicator`);
-  }
 });

@@ -59,7 +59,9 @@ export function renderWorkspacePanel(ctx: SidebarContext, width: number): string
     return lines;
   }
 
-  const files = ctx.workspaceFiles.slice(0, 15);
+  // Full file list. The scrollable viewport (see renderSidebar) decides how
+  // many are shown at once; no 15-file hard cap here anymore.
+  const files = ctx.workspaceFiles;
   if (files.length === 0) {
     lines.push(dim(" (clean)"));
     return lines;
