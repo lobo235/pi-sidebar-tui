@@ -6,6 +6,17 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- A pi this package was not verified against now warns once per session, naming the pi and the verified release lines
+  (1.2 through 1.5). Anything learned before a context existed to notify through is queued and shown at session start.
+- The ten load-time `registerCommand`/`registerShortcut` calls go through a guarded registrar: a pi that moved one
+  warns once, naming it, instead of throwing while the package loads.
+
+### Changed
+
+- The vendored `@earendil-works/pi-coding-agent` moves to 1.5.0; 186 tests pass there.
+
+### Added
+
 - **Hide on narrow terminals** (opt-in): With `minMainWidth` set, the sidebar hides when pi's main area would be narrower than that many columns, giving pi the full terminal width, and comes back when the terminal widens again. The default is `0` (never hide), so nothing changes until you set it. `/sidebar-tui min-main 40` hides it below 86 columns with the default sidebar width; `/sidebar-tui min-main <N>` (0-500) sets it live, persisted to `sidebar-tui.json`. Closes #2.
 
 ### Changed
